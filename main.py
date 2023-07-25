@@ -11,16 +11,17 @@ import pylab as plt
 from tqdm import tqdm
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--batch-size', type=int, default=8)
+parser.add_argument('--batch-size', type=int, default=64)
 parser.add_argument('--block-size', type=int, default=32)
-parser.add_argument('--max-iters', type=int, default=100_000)
-parser.add_argument('--eval-interval', type=int, default=1_000)
+parser.add_argument('--max-iters', type=int, default=5_000)
+parser.add_argument('--eval-interval', type=int, default=500)
 parser.add_argument('--learning-rate', type=float, default=3e-3)
 parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
 parser.add_argument('--eval-iters', type=int, default=200)
-parser.add_argument('--d-model', type=int, default=64)
+parser.add_argument('--d-model', type=int, default=32)
 parser.add_argument('--nhead', type=int, default=4)
 parser.add_argument('--num-layers', type=int, default=4)
+parser.add_argument('--temperature', type=float, default=0.1)
 args = parser.parse_args()
 
 torch.manual_seed(0)
@@ -97,21 +98,23 @@ class Model(nn.Module):
         encoder_layer = nn.TransformerEncoderLayer(d_model=args.d_model, nhead=args.nhead, dim_feedforward=args.d_model * 4, batch_first=True)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=args.num_layers)
 
-    def forward(self, x, y):
-        pos_emb = self.position_embedding_table(torch.arange(args.block_size, device=args.device))
+    def forward(self, x, y=None):
+        pos_emb = self.position_embedding_table(torch.arange(x.shape[1], device=args.device))
         mask = nn.Transformer.generate_square_subsequent_mask(x.shape[1], device=args.device)
         x = x[:, :, :2]
-        y = y[:, :, :2]
         x = self.input_project(x) 
         x = x + pos_emb
         x = self.transformer_encoder(x, mask=mask, is_causal=True)
         x = self.output_project(x)
+        if y is None:
+            return x
+        y = y[:, :, :2]
         loss = F.mse_loss(x, y)
         return x, loss
 
+MU = torch.tensor([8.4637, 0.2108, 0])
+STD = torch.tensor([44.9969, 37.0469, 1])
 def train():
-    MU = torch.tensor([8.4637, 0.2108, 0])
-    STD = torch.tensor([44.9969, 37.0469, 1])
     dataset = pickle.load(open('data/all.pkl', 'rb'))
     val_names = set(l.strip() for l in open('data/testset_v.txt'))
 
@@ -169,6 +172,22 @@ def train():
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
+    torch.save(model.state_dict(), 'model.pt')
+
+@torch.no_grad()
+def generate():
+    model = Model()
+    model.load_state_dict(torch.load('model.pt'))
+    x = torch.zeros((1, 1, 3))
+    for i in range(512):
+        x_cond = x[:,-args.block_size:]
+        pred = model(x_cond)
+        sample = torch.normal(pred[:,-1:,:], args.temperature)
+        sample = torch.cat((sample, torch.zeros(1,1,1)), dim=2)
+        x = torch.cat((x, sample), dim=1)
+    x = x * STD + MU
+    x[:, -1, 2] = 1
+    plot_example(dict(line='SAMPLE', strokes=x[0]))
 
 if __name__ == '__main__':
-    train()
+    generate()
