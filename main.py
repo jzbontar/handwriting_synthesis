@@ -4,7 +4,6 @@ import pylab as plt
 import xml.etree.ElementTree as ET
 from tqdm import tqdm
 import pickle
-import time
 import random
 import torch
 from torch import nn, optim
@@ -12,12 +11,12 @@ from torch.nn import functional as F
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--batch-size', type=int, default=8)
-parser.add_argument('--block-size', type=int, default=32)
+parser.add_argument('--block-size', type=int, default=64)
 parser.add_argument('--d-model', type=int, default=64)
-parser.add_argument('--nhead', type=int, default=8)
-parser.add_argument('--num-layers', type=int, default=2)
-parser.add_argument('--learning-rate', type=float, default=1e-3)
-parser.add_argument('--max-iters', type=int, default=5000)
+parser.add_argument('--nhead', type=int, default=4)
+parser.add_argument('--num-layers', type=int, default=4)
+parser.add_argument('--learning-rate', type=float, default=3e-4)
+parser.add_argument('--max-iters', type=int, default=10_000)
 parser.add_argument('--eval-interval', type=int, default=500)
 parser.add_argument('--eval-iters', type=int, default=200)
 parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
@@ -116,6 +115,7 @@ def train():
         flat_dataset = []
         for ex in dataset:
             for l, s in zip(ex['lines'], ex['strokes']):
+                s = s.to(args.device)
                 s = (s - MU) / STD
                 flat_dataset.append(dict(line=l, strokes=s))
         return flat_dataset
@@ -136,7 +136,6 @@ def train():
             y.append(ex['strokes'][j + 1:j + args.block_size + 1])
         x = torch.stack(x)
         y = torch.stack(y)
-        x, y = x.to(args.device), y.to(args.device)
         return x, y
 
     @torch.no_grad()
