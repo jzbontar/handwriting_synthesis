@@ -1,25 +1,26 @@
 import argparse
 from pathlib import Path
-import pylab as plt
 import xml.etree.ElementTree as ET
-from tqdm import tqdm
 import pickle
 import random
+
 import torch
 from torch import nn, optim
 from torch.nn import functional as F
+import pylab as plt
+from tqdm import tqdm
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--batch-size', type=int, default=8)
-parser.add_argument('--block-size', type=int, default=64)
+parser.add_argument('--block-size', type=int, default=32)
+parser.add_argument('--max-iters', type=int, default=100_000)
+parser.add_argument('--eval-interval', type=int, default=1_000)
+parser.add_argument('--learning-rate', type=float, default=3e-3)
+parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
+parser.add_argument('--eval-iters', type=int, default=200)
 parser.add_argument('--d-model', type=int, default=64)
 parser.add_argument('--nhead', type=int, default=4)
 parser.add_argument('--num-layers', type=int, default=4)
-parser.add_argument('--learning-rate', type=float, default=3e-4)
-parser.add_argument('--max-iters', type=int, default=10_000)
-parser.add_argument('--eval-interval', type=int, default=500)
-parser.add_argument('--eval-iters', type=int, default=200)
-parser.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
 args = parser.parse_args()
 
 torch.manual_seed(0)
@@ -92,14 +93,17 @@ class Model(nn.Module):
         super().__init__()
         self.input_project = nn.Linear(2, args.d_model)
         self.output_project = nn.Linear(args.d_model, 2)
+        self.position_embedding_table = nn.Embedding(args.block_size, args.d_model)
         encoder_layer = nn.TransformerEncoderLayer(d_model=args.d_model, nhead=args.nhead, dim_feedforward=args.d_model * 4, batch_first=True)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=args.num_layers)
 
     def forward(self, x, y):
+        pos_emb = self.position_embedding_table(torch.arange(args.block_size, device=args.device))
+        mask = nn.Transformer.generate_square_subsequent_mask(x.shape[1], device=args.device)
         x = x[:, :, :2]
         y = y[:, :, :2]
-        mask = nn.Transformer.generate_square_subsequent_mask(x.shape[1], device=args.device)
-        x = self.input_project(x)
+        x = self.input_project(x) 
+        x = x + pos_emb
         x = self.transformer_encoder(x, mask=mask, is_causal=True)
         x = self.output_project(x)
         loss = F.mse_loss(x, y)
@@ -160,7 +164,6 @@ def train():
         if iter % args.eval_interval == 0 or iter == args.max_iters - 1:
             losses = estimate_loss()
             print(f'step {iter}: train loss {losses["train"]:.4f}, val loss {losses["val"]:.4f}')
-
         xb, yb = get_batch('train')
         _, loss = model(xb, yb)
         optimizer.zero_grad(set_to_none=True)
