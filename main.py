@@ -165,13 +165,13 @@ def train():
     model = Model()
     model = model.to(args.device)
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
-    wandb.login()
     wandb.init(project='handwriting_synthesis', config=args)
     tt = time.time()
     for iter in range(args.max_iters):
         if iter % args.eval_interval == 0 or iter == args.max_iters - 1:
             losses = estimate_loss()
-            wandb.log(losses)
+            if iter > 0:
+                wandb.log(losses, step=iter)
             print(f'step {iter}: train loss {losses["train"]:.4f}, val loss {losses["val"]:.4f}, time {int(time.time() - tt)}')
             tt = time.time()
         xb, yb = get_batch('train')
