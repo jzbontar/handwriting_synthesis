@@ -15,7 +15,7 @@ import model
 
  # I/O
 out_dir = 'out'
-eval_interval = 2000
+eval_interval = 10_000
 log_interval = 1_000_000
 eval_iters = 200
 eval_only = False # if True, script exits right after the first eval
@@ -24,12 +24,12 @@ init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
 # wandb logging
 wandb_log = False # disabled by default
 wandb_project = 'handwriting_synthesis'
-wandb_run_name = 'run' + '_'.join(sys.argv[2:])
+wandb_run_name = '_'.join(sys.argv[2:])
 # data
 dataset = 'openwebtext'
 gradient_accumulation_steps = 1 # used to simulate larger batch sizes
 batch_size = 64 # if gradient_accumulation_steps > 1, this is the micro-batch size
-block_size = 32
+block_size = 256
 # model
 n_layer = 4
 n_head = 4
@@ -38,7 +38,7 @@ dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
 bias = False # do we use bias inside LayerNorm and Linear layers?
 # adamw optimizer
 learning_rate = 6e-4 # max learning rate
-max_iters = 50_000 # total number of training iterations
+max_iters = 100_000 # total number of training iterations
 weight_decay = 1e-1
 beta1 = 0.9
 beta2 = 0.95
@@ -209,7 +209,7 @@ while True:
     if iter_num % eval_interval == 0 and master_process:
         losses = estimate_loss()
         print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
-        if wandb_log and iter_num > 0:
+        if wandb_log:
             wandb.log(data=losses, step=iter_num)
         if losses['val'] < best_val_loss or always_save_checkpoint:
             best_val_loss = losses['val']
