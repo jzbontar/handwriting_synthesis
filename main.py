@@ -10,7 +10,7 @@ import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
-import model2
+import model
 
  # I/O
 out_dir = 'out'
@@ -135,8 +135,8 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
 
 assert init_from == 'scratch'
 print("Initializing a new model from scratch")
-model_config = model2.ModelConfig(**model_args)
-model = model2.Model(model_config)
+model_config = model.ModelConfig(**model_args)
+model = model.Model(model_config)
 model.to(device)
 
 # initialize a GradScaler. If enabled=False scaler is a no-op
