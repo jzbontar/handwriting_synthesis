@@ -10,6 +10,7 @@ from torch import nn, optim
 from torch.nn import functional as F
 import pylab as plt
 from tqdm import tqdm
+import wandb
 
 parser = argparse.ArgumentParser()
 parser.add_argument('action')
@@ -112,7 +113,7 @@ class Model(nn.Module):
         mse_loss = F.mse_loss(x[:,:,:2], y[:,:,:2])
         bce_loss = F.binary_cross_entropy_with_logits(x[:,:,2], y[:,:,2])
         loss = mse_loss + bce_loss
-        return x, loss
+        return loss
 
 MU = torch.tensor([8.4637, 0.2108, 0])
 STD = torch.tensor([44.9969, 37.0469, 1])
@@ -155,7 +156,7 @@ def train():
             losses = torch.zeros(args.eval_iters)
             for i in range(args.eval_iters):
                 xb, yb = get_batch(split)
-                pred, loss = model(xb, yb)
+                loss = model(xb, yb)
                 losses[i] = loss.item()
             out[split] = losses.mean()
         model.train()
@@ -164,15 +165,17 @@ def train():
     model = Model()
     model = model.to(args.device)
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
-
+    wandb.login()
+    wandb.init(project='handwriting_synthesis', config=args)
     tt = time.time()
     for iter in range(args.max_iters):
         if iter % args.eval_interval == 0 or iter == args.max_iters - 1:
             losses = estimate_loss()
+            wandb.log(losses)
             print(f'step {iter}: train loss {losses["train"]:.4f}, val loss {losses["val"]:.4f}, time {int(time.time() - tt)}')
             tt = time.time()
         xb, yb = get_batch('train')
-        _, loss = model(xb, yb)
+        loss = model(xb, yb)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
