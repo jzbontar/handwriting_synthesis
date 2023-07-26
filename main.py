@@ -1,5 +1,6 @@
 import argparse
 from pathlib import Path
+import time
 import xml.etree.ElementTree as ET
 import pickle
 import random
@@ -11,6 +12,7 @@ import pylab as plt
 from tqdm import tqdm
 
 parser = argparse.ArgumentParser()
+parser.add_argument('action')
 parser.add_argument('--batch-size', type=int, default=64)
 parser.add_argument('--block-size', type=int, default=32)
 parser.add_argument('--max-iters', type=int, default=5_000)
@@ -92,8 +94,8 @@ def plot_example(ex):
 class Model(nn.Module):
     def __init__(self):
         super().__init__()
-        self.input_project = nn.Linear(2, args.d_model)
-        self.output_project = nn.Linear(args.d_model, 2)
+        self.input_project = nn.Linear(3, args.d_model)
+        self.output_project = nn.Linear(args.d_model, 3)
         self.position_embedding_table = nn.Embedding(args.block_size, args.d_model)
         encoder_layer = nn.TransformerEncoderLayer(d_model=args.d_model, nhead=args.nhead, dim_feedforward=args.d_model * 4, batch_first=True)
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=args.num_layers)
@@ -101,15 +103,15 @@ class Model(nn.Module):
     def forward(self, x, y=None):
         pos_emb = self.position_embedding_table(torch.arange(x.shape[1], device=args.device))
         mask = nn.Transformer.generate_square_subsequent_mask(x.shape[1], device=args.device)
-        x = x[:, :, :2]
         x = self.input_project(x) 
         x = x + pos_emb
         x = self.transformer_encoder(x, mask=mask, is_causal=True)
         x = self.output_project(x)
         if y is None:
             return x
-        y = y[:, :, :2]
-        loss = F.mse_loss(x, y)
+        mse_loss = F.mse_loss(x[:,:,:2], y[:,:,:2])
+        bce_loss = F.binary_cross_entropy_with_logits(x[:,:,2], y[:,:,2])
+        loss = mse_loss + bce_loss
         return x, loss
 
 MU = torch.tensor([8.4637, 0.2108, 0])
@@ -136,7 +138,7 @@ def train():
         for _ in range(args.batch_size):
             while True:
                 ex = random.choice(data)
-                if ex['strokes'].shape[0] >= args.block_size:
+                if ex['strokes'].shape[0] > args.block_size:
                     break
             j = random.randrange(ex['strokes'].shape[0] - args.block_size)
             x.append(ex['strokes'][j:j + args.block_size])
@@ -163,10 +165,12 @@ def train():
     model = model.to(args.device)
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
 
+    tt = time.time()
     for iter in range(args.max_iters):
         if iter % args.eval_interval == 0 or iter == args.max_iters - 1:
             losses = estimate_loss()
-            print(f'step {iter}: train loss {losses["train"]:.4f}, val loss {losses["val"]:.4f}')
+            print(f'step {iter}: train loss {losses["train"]:.4f}, val loss {losses["val"]:.4f}, time {int(time.time() - tt)}')
+            tt = time.time()
         xb, yb = get_batch('train')
         _, loss = model(xb, yb)
         optimizer.zero_grad(set_to_none=True)
@@ -182,12 +186,13 @@ def generate():
     for i in range(512):
         x_cond = x[:,-args.block_size:]
         pred = model(x_cond)
-        sample = torch.normal(pred[:,-1:,:], args.temperature)
-        sample = torch.cat((sample, torch.zeros(1,1,1)), dim=2)
-        x = torch.cat((x, sample), dim=1)
+        dxdy = torch.normal(pred[0, -1, :2], args.temperature)
+        storke_end = torch.rand(1) < F.sigmoid(pred[0, -1, 2])
+        sample = torch.cat((dxdy, storke_end))
+        x = torch.cat((x, sample[None, None]), dim=1)
     x = x * STD + MU
     x[:, -1, 2] = 1
     plot_example(dict(line='SAMPLE', strokes=x[0]))
 
 if __name__ == '__main__':
-    generate()
+    globals()[args.action]()
