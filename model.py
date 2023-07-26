@@ -17,6 +17,7 @@ class ModelConfig:
 class Model(nn.Module):
     def __init__(self, config):
         super().__init__()
+        self.config = config
         self.input_project = nn.Linear(3, config.n_embd)
         self.output_project = nn.Linear(config.n_embd, 3)
         self.position_embedding_table = nn.Embedding(config.block_size, config.n_embd)
@@ -66,3 +67,18 @@ class Model(nn.Module):
         print(f"using fused AdamW: {use_fused}")
 
         return optimizer
+
+    @torch.no_grad()
+    def generate(self, x, max_new_tokens, temperature=1.0):
+        for _ in range(max_new_tokens):
+            x_cond = x[:, -self.config.block_size:]
+            pred = self(x_cond)
+            dxdy = torch.normal(pred[0, -1, :2], temperature)
+            storke_end = torch.rand(1, device=x.device) < F.sigmoid(pred[0, -1, 2])
+            sample = torch.cat((dxdy, storke_end))
+            x = torch.cat((x, sample[None, None]), dim=1)
+        MU = torch.tensor([8.4637, 0.2108, 0]).to(x.device)
+        STD = torch.tensor([44.9969, 37.0469, 1]).to(x.device)
+        x = x * STD + MU
+        x[:, -1, 2] = 1
+        return x
