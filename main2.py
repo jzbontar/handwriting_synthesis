@@ -1,22 +1,21 @@
-from ast import literal_eval
-from contextlib import nullcontext
-from dataclasses import dataclass
-import inspect
-import math
 import os
+import time
+import math
 import pickle
 import random
-import sys
-import time
+from contextlib import nullcontext
 
+import numpy as np
 import torch
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.distributed import init_process_group, destroy_process_group
 
-import model
+import model2
 
-# I/O
+ # I/O
 out_dir = 'out'
 eval_interval = 2000
-log_interval = 100_000
+log_interval = 1
 eval_iters = 200
 eval_only = False # if True, script exits right after the first eval
 always_save_checkpoint = True # if True, always save a checkpoint after each eval
@@ -54,43 +53,32 @@ backend = 'nccl' # 'nccl', 'gloo', etc.
 device = 'cuda' # examples: 'cpu', 'cuda', 'cuda:0', 'cuda:1' etc., or try 'mps' on macbooks
 dtype = 'bfloat16' if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else 'float16' # 'float32', 'bfloat16', or 'float16', the latter will auto implement a GradScaler
 compile = True # use PyTorch 2.0 to compile the model to be faster
-
+# -----------------------------------------------------------------------------
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
-for arg in sys.argv[1:]:
-    if '=' not in arg:
-        # assume it's the name of a config file
-        assert not arg.startswith('--')
-        config_file = arg
-        print(f"Overriding config with {config_file}:")
-        with open(config_file) as f:
-            print(f.read())
-        exec(open(config_file).read())
-    else:
-        # assume it's a --key=value argument
-        assert arg.startswith('--')
-        key, val = arg.split('=')
-        key = key[2:]
-        if key in globals():
-            try:
-                # attempt to eval it it (e.g. if bool, number, or etc)
-                attempt = literal_eval(val)
-            except (SyntaxError, ValueError):
-                # if that goes wrong, just use the string
-                attempt = val
-            # ensure the types match ok
-            assert type(attempt) == type(globals()[key])
-            # cross fingers
-            print(f"Overriding: {key} = {attempt}")
-            globals()[key] = attempt
-        else:
-            raise ValueError(f"Unknown config key: {key}")
+exec(open('configurator.py').read()) # overrides from command line or config file
 config = {k: globals()[k] for k in config_keys} # will be useful for logging
+# -----------------------------------------------------------------------------
 
+# various inits, derived attributes, I/O setup
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
-assert not ddp
-master_process = True
-seed_offset = 0
-ddp_world_size = 1
+if ddp:
+    init_process_group(backend=backend)
+    ddp_rank = int(os.environ['RANK'])
+    ddp_local_rank = int(os.environ['LOCAL_RANK'])
+    ddp_world_size = int(os.environ['WORLD_SIZE'])
+    device = f'cuda:{ddp_local_rank}'
+    torch.cuda.set_device(device)
+    master_process = ddp_rank == 0 # this process will do logging, checkpointing etc.
+    seed_offset = ddp_rank # each process gets a different seed
+    # world_size number of processes will be training simultaneously, so we can scale
+    # down the desired gradient accumulation iterations per process proportionally
+    assert gradient_accumulation_steps % ddp_world_size == 0
+    gradient_accumulation_steps //= ddp_world_size
+else:
+    # if not ddp, we are running on a single gpu, and one process
+    master_process = True
+    seed_offset = 0
+    ddp_world_size = 1
 tokens_per_iter = gradient_accumulation_steps * ddp_world_size * batch_size * block_size
 print(f"tokens per iteration will be: {tokens_per_iter:,}")
 
@@ -147,42 +135,26 @@ model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=bloc
 
 assert init_from == 'scratch'
 print("Initializing a new model from scratch")
-model_config = model.ModelConfig(**model_args)
-model = model.Model(model_config)
+model_config = model2.ModelConfig(**model_args)
+model = model2.Model(model_config)
 model.to(device)
 
 # initialize a GradScaler. If enabled=False scaler is a no-op
 scaler = torch.cuda.amp.GradScaler(enabled=(dtype == 'float16'))
 
 # optimizer
-# start with all of the candidate parameters
-param_dict = {pn: p for pn, p in model.named_parameters()}
-# filter out those that do not require grad
-param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
-# create optim groups. Any parameters that is 2D will be weight decayed, otherwise no.
-# i.e. all weight tensors in matmuls + embeddings decay, all biases and layernorms don't.
-decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
-nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
-optim_groups = [
-    {'params': decay_params, 'weight_decay': weight_decay},
-    {'params': nodecay_params, 'weight_decay': 0.0}
-]
-num_decay_params = sum(p.numel() for p in decay_params)
-num_nodecay_params = sum(p.numel() for p in nodecay_params)
-print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
-print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
-# Create AdamW optimizer and use the fused version if it is available
-fused_available = 'fused' in inspect.signature(torch.optim.AdamW).parameters
-use_fused = fused_available and device_type == 'cuda'
-extra_args = dict(fused=True) if use_fused else dict()
-optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(beta1, beta2), **extra_args)
-print(f"using fused AdamW: {use_fused}")
+optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
+checkpoint = None # free up memory
 
 # compile the model
 if compile:
     print("compiling the model... (takes a ~minute)")
     unoptimized_model = model
     model = torch.compile(model) # requires PyTorch 2.0
+
+# wrap model into DDP container
+if ddp:
+    model = DDP(model, device_ids=[ddp_local_rank])
 
 # helps estimate an arbitrarily accurate loss over either split using many batches
 @torch.no_grad()
@@ -304,3 +276,6 @@ while True:
     # termination conditions
     if iter_num > max_iters:
         break
+
+if ddp:
+    destroy_process_group()
