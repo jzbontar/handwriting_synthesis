@@ -6,12 +6,14 @@ import pickle
 import random
 from contextlib import nullcontext
 
+import pylab as plt
 import numpy as np
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
 import model
+import extern
 
  # I/O
 out_dir = 'out'
@@ -94,8 +96,6 @@ device_type = 'cuda' if 'cuda' in device else 'cpu' # for later use in torch.aut
 ptdtype = {'float32': torch.float32, 'bfloat16': torch.bfloat16, 'float16': torch.float16}[dtype]
 ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=device_type, dtype=ptdtype)
 
-MU = torch.tensor([8.4637, 0.2108, 0])
-STD = torch.tensor([44.9969, 37.0469, 1])
 dataset = pickle.load(open('data/all.pkl', 'rb'))
 val_names = set(l.strip() for l in open('data/testset_v.txt'))
 
@@ -103,7 +103,7 @@ def flatten(dataset):
     flat_dataset = []
     for ex in dataset:
         for l, s in zip(ex['lines'], ex['strokes']):
-            s = (s - MU) / STD
+            s = (s - extern.MU) / extern.STD
             s = s.to(device)
             flat_dataset.append(dict(line=l, strokes=s))
     return flat_dataset
@@ -210,7 +210,16 @@ while True:
         losses = estimate_loss()
         print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
         if wandb_log:
-            wandb.log(data=losses, step=iter_num)
+            num_samples = 3
+            fig, axs = plt.subplots(num_samples)
+            for i in range(num_samples):
+                sample = model.generate(torch.zeros(1, 1, 3).to(device), max_new_tokens=512, temperature=0.2)
+                extern.plot_example(axs[i], sample[0])
+            wandb.log(data=dict(
+                train=losses['train'],
+                val=losses['val'],
+                samples=wandb.Image(fig),
+            ), step=iter_num)
         if losses['val'] < best_val_loss or always_save_checkpoint:
             best_val_loss = losses['val']
             if iter_num > 0:

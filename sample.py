@@ -7,6 +7,10 @@ from contextlib import nullcontext
 import torch
 from model import ModelConfig, Model
 
+import pylab as plt
+
+import extern
+
 # -----------------------------------------------------------------------------
 init_from = 'resume' # either 'resume' (from an out_dir) or a gpt2 variant (e.g. 'gpt2-xl')
 out_dir = 'out' # ignored if init_from is not 'resume'
@@ -49,23 +53,6 @@ model.to(device)
 if compile:
     model = torch.compile(model) # requires PyTorch 2.0 (optional)
 
-
-import pylab as plt
-def plot_example(ex):
-    plt.title(ex['line'])
-    xs, ys = [], []
-    prev = 0, 0
-    plt.gca().set_aspect('equal')
-    for dx, dy, end in ex['strokes']:
-        x = dx + prev[0]
-        y = dy + prev[1]
-        xs.append(x)
-        ys.append(-y)
-        prev = x, y
-        if end:
-            plt.plot(xs, ys)
-            xs, ys = [], []
-
 x = torch.zeros(1, 1, 3).to(device)
 
 # run generation
@@ -73,7 +60,7 @@ with torch.no_grad():
     with ctx:
         for k in range(num_samples):
             y = model.generate(x, max_new_tokens, temperature=temperature)
-            plot_example(dict(line='SAMPLE', strokes=y[0].to('cpu')))
+            extern.plot_example(dict(line='SAMPLE', strokes=y[0]))
             plt.savefig(f'out/{k}.png', bbox_inches='tight')
             plt.close()
             

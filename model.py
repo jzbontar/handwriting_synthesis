@@ -4,6 +4,8 @@ from torch import nn
 import torch
 import torch.nn.functional as F
 
+import extern
+
 @dataclass
 class ModelConfig:
     block_size: int = 1024
@@ -77,8 +79,7 @@ class Model(nn.Module):
             storke_end = torch.rand(1, device=x.device) < F.sigmoid(pred[0, -1, 2])
             sample = torch.cat((dxdy, storke_end))
             x = torch.cat((x, sample[None, None]), dim=1)
-        MU = torch.tensor([8.4637, 0.2108, 0]).to(x.device)
-        STD = torch.tensor([44.9969, 37.0469, 1]).to(x.device)
-        x = x * STD + MU
+        x = x.to('cpu')
+        x = x * extern.STD + extern.MU
         x[:, -1, 2] = 1
         return x
