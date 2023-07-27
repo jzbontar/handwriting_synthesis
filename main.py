@@ -13,13 +13,14 @@ max_iters = 5000
 eval_interval = 500
 learning_rate = 3e-4
 device = 'cuda'
-dtype = torch.float32
+dtype = 'float32'
 compile = False
 eval_iters = 200
 n_embd = 32
 n_head = 4
 n_layer = 4
 dropout = 0.0
+exec(open('configurator.py').read())
 
 random.seed(1337)
 torch.manual_seed(1337)
@@ -96,7 +97,7 @@ class Model(nn.Module):
         loss = mse_loss + bce_loss
         return x, loss
 
-ctx = torch.autocast(device, dtype)
+ctx = torch.autocast(device, getattr(torch, dtype))
 model = Model()
 model = model.to(device)
 if compile:
