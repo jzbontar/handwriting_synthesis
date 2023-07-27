@@ -150,13 +150,6 @@ class Model(nn.Module):
         loss = mse_loss + bce_loss
         return y, loss
     
-ctx = torch.autocast(device, getattr(torch, dtype))
-model = Model()
-model = model.to(device)
-if compile:
-    model = torch.compile(model)
-torch.set_float32_matmul_precision('high')
-
 @torch.no_grad()
 def generate(text, max_tokens, temperature=1.0):
     x = torch.zeros((1, 1, 3), device=device)
@@ -169,6 +162,13 @@ def generate(text, max_tokens, temperature=1.0):
         sample = torch.cat((dxdy, stroke_end))
         x = torch.cat((x, sample[None, None]), dim=1)
     return x[0, 1:]
+    
+ctx = torch.autocast(device, getattr(torch, dtype))
+model = Model()
+model = model.to(device)
+if compile:
+    model = torch.compile(model)
+torch.set_float32_matmul_precision('high')
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 if wandb_log:
