@@ -33,7 +33,7 @@ torch.manual_seed(1337)
 def plot_example(ax, text, strokes):
     ax.set_title(text)
     ax.axis('equal')
-    xs, ys = [], []
+    xs, ys = [0], [0]
     prev = 0, 0
     for dx, dy, end in strokes:
         x = dx + prev[0]
