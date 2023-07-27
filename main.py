@@ -185,7 +185,7 @@ for epoch in range(max_epochs):
         optimizer.step()
     if epoch % eval_interval == 0 or epoch == max_epochs - 1:
         losses = estimate_loss()
-        print(f"epoch {epoch}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, time {time.time() - tt}")
+        print(f"epoch {epoch}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, time {time.time() - tt:.1f}")
         if wandb_log:
             texts = ['Hello World', 'Katarina Zupancic', 'Jure Zbontar']
             fig, axs = plt.subplots(len(texts))
@@ -198,4 +198,5 @@ for epoch in range(max_epochs):
                 val=losses['val'],
                 samples=wandb.Image(fig),
             ), step=epoch)
+            plt.close()
         tt = time.time()
