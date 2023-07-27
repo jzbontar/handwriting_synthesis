@@ -161,6 +161,7 @@ def generate(text, max_tokens, temperature=1.0):
         stroke_end = torch.rand(1, device=device) < F.sigmoid(pred[2])
         sample = torch.cat((dxdy, stroke_end))
         x = torch.cat((x, sample[None, None]), dim=1)
+    x = x * STD + MU
     return x[0, 1:]
     
 ctx = torch.autocast(device, getattr(torch, dtype))
