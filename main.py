@@ -8,13 +8,12 @@ from torch.nn import functional as F
 
 # hyperparameters
 batch_size = 64
-max_iters = 5000
-eval_interval = 500
+max_epochs = 100
+eval_interval = 5
 learning_rate = 3e-4
 device = 'cuda'
 dtype = 'bfloat16'
 compile = False
-eval_iters = 30
 n_embd = 32
 n_head = 4
 n_enc_layer = 4
@@ -48,36 +47,40 @@ def flatten(dataset):
             s = s.to(device)
             flat_dataset.append(dict(line=l, strokes=s))
     return flat_dataset
-
+    
 n = int(len(dataset) * 0.8)
 train_data = flatten(dataset[:n])
 val_data = flatten(dataset[n:])
 
-def get_batch(split):
-    data = train_data if split == 'train' else val_data
-    enc_x, dec_x, dec_y = [], [], []
+def get_batches(split):
+    if split == 'train':
+        random.shuffle(train_data)
 
-    for ex in random.sample(data, batch_size):
-        enc_x.append(ex['line'])
-        dec_x.append(ex['strokes'][:-1])
-        dec_y.append(ex['strokes'][1:])
-    enc_x = nn.utils.rnn.pad_sequence(enc_x, batch_first=True)
-    dec_x = nn.utils.rnn.pad_sequence(dec_x, batch_first=True)
-    dec_y = nn.utils.rnn.pad_sequence(dec_y, batch_first=True)
-    return enc_x, dec_x, dec_y
+    data = train_data if split == 'train' else val_data
+    i = 0
+    while i + batch_size < len(data):
+        enc_x, dec_x, dec_y = [], [], []
+        for ex in data[i:i + batch_size]:
+            enc_x.append(ex['line'])
+            dec_x.append(ex['strokes'][:-1])
+            dec_y.append(ex['strokes'][1:])
+        enc_x = nn.utils.rnn.pad_sequence(enc_x, batch_first=True)
+        dec_x = nn.utils.rnn.pad_sequence(dec_x, batch_first=True)
+        dec_y = nn.utils.rnn.pad_sequence(dec_y, batch_first=True)
+        yield enc_x, dec_x, dec_y            
+        i += batch_size
 
 @torch.no_grad()
 def estimate_loss():
     out = {}
     model.eval()
     for split in ['train', 'val']:
-        losses = torch.zeros(eval_iters)
-        for k in range(eval_iters):
-            batch = get_batch(split)
+        losses = []
+        for batch in get_batches(split):
             with ctx:
                 _, loss = model(*batch)
-            losses[k] = loss.item()
-        out[split] = losses.mean()
+            losses.append(loss.item())
+        out[split] = torch.tensor(losses).mean()
     model.train()
     return out
 
@@ -134,14 +137,14 @@ torch.set_float32_matmul_precision('high')
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 tt = time.time()
-for iter in range(max_iters):
-    if iter % eval_interval == 0 or iter == max_iters - 1:
+for epoch in range(max_epochs):
+    for batch in get_batches('train'):
+        with ctx:
+            _, loss = model(*batch)
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        optimizer.step()
+    if epoch % eval_interval == 0 or epoch == max_epochs - 1:
         losses = estimate_loss()
-        print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, time {time.time() - tt}")
+        print(f"epoch {epoch}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, time {time.time() - tt}")
         tt = time.time()
-    batch = get_batch('train')
-    with ctx:
-        _, loss = model(*batch)
-    optimizer.zero_grad(set_to_none=True)
-    loss.backward()
-    optimizer.step()
