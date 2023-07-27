@@ -1,5 +1,6 @@
 import random
 import time
+import sys
 
 import torch
 import torch.nn as nn
@@ -21,10 +22,28 @@ n_dec_layer = 4
 dropout = 0.0
 max_line_len = 128
 max_strokes_len = 768
+wandb_log = False
+wandb_project = 'handwriting_synthesis'
+wandb_run_name = '_'.join(sys.argv[1:])
 exec(open('configurator.py').read())
 
 random.seed(1337)
 torch.manual_seed(1337)
+
+def plot_example(ax, text, strokes):
+    ax.set_title(text)
+    ax.axis('equal')
+    xs, ys = [], []
+    prev = 0, 0
+    for dx, dy, end in strokes:
+        x = dx + prev[0]
+        y = dy + prev[1]
+        xs.append(x)
+        ys.append(-y)
+        prev = x, y
+        if end:
+            ax.plot(xs, ys)
+            xs, ys = [], []
 
 dataset = pickle.load(open('data/all.pkl', 'rb'))
 dataset = list(dataset.values())
@@ -152,6 +171,10 @@ def generate(text, max_tokens, temperature=1.0):
     return x[0, 1:]
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+if wandb_log:
+    import wandb
+    import pylab as plt
+    wandb.init(project=wandb_project, name=wandb_run_name)
 tt = time.time()
 for epoch in range(max_epochs):
     for batch in get_batches('train'):
@@ -163,4 +186,16 @@ for epoch in range(max_epochs):
     if epoch % eval_interval == 0 or epoch == max_epochs - 1:
         losses = estimate_loss()
         print(f"epoch {epoch}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, time {time.time() - tt}")
+        if wandb_log:
+            texts = ['Hello World', 'Katarina Zupancic', 'Jure Zbontar']
+            fig, axs = plt.subplots(len(texts))
+            for i, text in enumerate(texts):
+                sample = generate(text, 512, temperature=0.2)
+                plot_example(axs[i], text, sample.cpu())
+            fig.tight_layout()
+            wandb.log(data=dict(
+                train=losses['train'],
+                val=losses['val'],
+                samples=wandb.Image(fig),
+            ), step=epoch)
         tt = time.time()
