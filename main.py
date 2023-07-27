@@ -44,6 +44,7 @@ def flatten(dataset):
             l = encode(l)
             l = l.to(device)
             s = (s - MU) / STD
+            s = torch.cat((torch.zeros(1, 3), s))
             s = s.to(device)
             flat_dataset.append(dict(line=l, strokes=s))
     return flat_dataset
@@ -65,8 +66,8 @@ def get_batches(split):
             dec_x.append(ex['strokes'][:-1])
             dec_y.append(ex['strokes'][1:])
         enc_x = nn.utils.rnn.pad_sequence(enc_x, batch_first=True)
-        dec_x = nn.utils.rnn.pad_sequence(dec_x, batch_first=True)
-        dec_y = nn.utils.rnn.pad_sequence(dec_y, batch_first=True)
+        dec_x = nn.utils.rnn.pad_sequence(dec_x, batch_first=True, padding_value=-1)
+        dec_y = nn.utils.rnn.pad_sequence(dec_y, batch_first=True, padding_value=-1)
         yield enc_x, dec_x, dec_y            
         i += batch_size
 
@@ -103,9 +104,9 @@ class Model(nn.Module):
         )
 
     def forward(self, enc_x, dec_x, dec_y=None):
-        tgt_mask = nn.Transformer.generate_square_subsequent_mask(dec_x.size(1), device=device)
-        src_key_padding_mask = torch.where(enc_x == 0, -torch.inf, 0.)
-        tgt_key_padding_mask = torch.where(torch.all(dec_x == 0, dim=2), -torch.inf, 0.)
+        tgt_mask = nn.Transformer.generate_square_subsequent_mask(dec_x.size(1), device=device) == -torch.inf
+        src_key_padding_mask = enc_x == 0
+        tgt_key_padding_mask = torch.all(dec_x == -1, dim=2)
 
         enc_pos = self.enc_pos(torch.arange(enc_x.size(1), device=device))
         dec_pos = self.dec_pos(torch.arange(dec_x.size(1), device=device))
@@ -123,8 +124,10 @@ class Model(nn.Module):
 
         if dec_y is None:
             return y
-        mse_loss = F.mse_loss(y[:, :, :2], dec_y[:, :, :2])
-        bce_loss = F.binary_cross_entropy_with_logits(y[:, :, 2], dec_y[:, :, 2])
+        y_valid = y[~tgt_key_padding_mask]
+        dec_y_valid = dec_y[~tgt_key_padding_mask]
+        mse_loss = F.mse_loss(y_valid[:, :2], dec_y_valid[:, :2])
+        bce_loss = F.binary_cross_entropy_with_logits(y_valid[:, 2], dec_y_valid[:, 2])
         loss = mse_loss + bce_loss
         return y, loss
     
@@ -134,6 +137,19 @@ model = model.to(device)
 if compile:
     model = torch.compile(model)
 torch.set_float32_matmul_precision('high')
+
+@torch.no_grad()
+def generate(text, max_tokens, temperature=1.0):
+    x = torch.zeros((1, 1, 3), device=device)
+    enc_x = encode(text)[None].to(device)
+    for _ in range(max_tokens):
+        with ctx:
+            pred = model(enc_x, x)[0, -1]
+        dxdy = torch.normal(pred[:2], temperature)
+        stroke_end = torch.rand(1, device=device) < F.sigmoid(pred[2])
+        sample = torch.cat((dxdy, stroke_end))
+        x = torch.cat((x, sample[None, None]), dim=1)
+    return x[0, 1:]
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
 tt = time.time()
