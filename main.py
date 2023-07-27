@@ -1,4 +1,5 @@
 import random
+import time
 
 import torch
 import torch.nn as nn
@@ -12,6 +13,8 @@ max_iters = 5000
 eval_interval = 500
 learning_rate = 3e-4
 device = 'cuda'
+dtype = torch.float32
+compile = False
 eval_iters = 200
 n_embd = 32
 n_head = 4
@@ -62,7 +65,8 @@ def estimate_loss():
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
             X, Y = get_batch(split)
-            logits, loss = model(X, Y)
+            with ctx:
+                _, loss = model(X, Y)
             losses[k] = loss.item()
         out[split] = losses.mean()
     model.train()
@@ -91,16 +95,24 @@ class Model(nn.Module):
         bce_loss = F.binary_cross_entropy_with_logits(x[:,:,2], y[:,:,2])
         loss = mse_loss + bce_loss
         return x, loss
-    
+
+ctx = torch.autocast(device, dtype)
 model = Model()
-m = model.to(device)
+model = model.to(device)
+if compile:
+    model = torch.compile(model)
+torch.set_float32_matmul_precision('high')
+
 optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+tt = time.time()
 for iter in range(max_iters):
     if iter % eval_interval == 0 or iter == max_iters - 1:
         losses = estimate_loss()
-        print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+        print(f"step {iter}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, time {time.time() - tt}")
+        tt = time.time()
     xb, yb = get_batch('train')
-    _, loss = model(xb, yb)
+    with ctx:
+        _, loss = model(xb, yb)
     optimizer.zero_grad(set_to_none=True)
     loss.backward()
     optimizer.step()
