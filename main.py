@@ -11,8 +11,8 @@ from torch.nn import functional as F
 # hyperparameters
 subsample = 4
 batch_size = 64
-max_epochs = 100
-eval_interval = 5
+max_epochs = 1000
+eval_interval = 25
 learning_rate = 3e-4
 device = 'cuda'
 dtype = 'bfloat16'
@@ -71,7 +71,7 @@ def flatten(dataset):
             # 3: end stroke
             # 4: end example
             cls = s[:, 2].long() + 2
-            cls[-1] += 1
+            cls[-1] = 4
             cls = torch.cat((torch.tensor([1]), cls))
             cls = cls.to(device)
 
@@ -196,7 +196,7 @@ def generate(text, max_tokens, temperature=1.0):
             d = model(dict(line=line, pos_x=pos_x, cls_x=cls_x))
         pos = torch.normal(d['pos'][0, -1], temperature)
         pos_x = torch.cat((pos_x, pos[None, None]), dim=1)
-        probs = F.softmax(d['cls'][0, -1], dim=0)
+        probs = F.softmax(d['cls'][0, -1] / (temperature + 1e-5), dim=0)
         cls = torch.multinomial(probs, num_samples=1)
         cls_x = torch.cat((cls_x, cls[None]), dim=1)
         if cls.item() == 4:
