@@ -1,3 +1,4 @@
+import math
 import random
 import time
 import sys
@@ -128,11 +129,23 @@ def estimate_loss():
     model.train()
     return out
 
+class PositionalEncoding(nn.Module):
+    def __init__(self, emb_size, maxlen):
+        super().__init__()
+        den = torch.exp(- torch.arange(0, emb_size, 2)* math.log(10000) / emb_size)
+        pos = torch.arange(0, maxlen).reshape(maxlen, 1)
+        pos_embedding = torch.zeros((maxlen, emb_size))
+        pos_embedding[:, 0::2] = torch.sin(pos * den)
+        pos_embedding[:, 1::2] = torch.cos(pos * den)
+        self.register_buffer('pos_embedding', pos_embedding)
+
+    def forward(self, token_embedding: torch.Tensor):
+        return token_embedding + self.pos_embedding[:token_embedding.size(1)]
+
 class Model(nn.Module):
     def __init__(self):
         super().__init__()
-        self.enc_pos = nn.Embedding(max_line_len, n_embd)
-        self.dec_pos = nn.Embedding(max_strokes_len, n_embd)
+        self.pos = PositionalEncoding(n_embd, max_strokes_len)
         self.line_emb = nn.Embedding(128, n_embd)
         self.cls_emb = nn.Embedding(5, n_embd)
         self.cls_head = nn.Linear(n_embd, 5)
@@ -153,14 +166,12 @@ class Model(nn.Module):
         src_pad_mask = b['line'] == 0
         tgt_pad_mask = b['cls_x'] == 0
 
-        enc_pos = self.enc_pos(torch.arange(b['line'].size(1), device=device))
-        dec_pos = self.dec_pos(torch.arange(b['cls_x'].size(1), device=device))
         line_emb = self.line_emb(b['line'])
         cls_emb = self.cls_emb(b['cls_x'])
         pos_emb = self.pos_emb(b['pos_x'])
         y = self.transformer(
-            enc_pos + line_emb, 
-            dec_pos + cls_emb + pos_emb, 
+            self.pos(line_emb), 
+            self.pos(cls_emb + pos_emb), 
             tgt_mask=attn_mask,
             src_key_padding_mask=src_pad_mask,
             tgt_key_padding_mask=tgt_pad_mask,
