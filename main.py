@@ -229,7 +229,7 @@ for epoch in range(max_epochs):
         if wandb_log:
             data = {f'{split}/{loss}':losses[split][loss] for split in ('train', 'val') for loss in ('loss', 'mse_loss', 'ce_loss')}
             
-            texts = ['A MOVE to stop Mr . Gaitskell', 'Hello world', 'Katarina Zupancic and Jure Zbontar']
+            texts = ['A MOVE to stop Mr . Gaitskell', 'Hello world', 'Katarina']
             fig, axs = plt.subplots(len(texts))
             for i, t in enumerate(texts):
                 sample = generate(t, max_strokes_len)
