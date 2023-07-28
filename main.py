@@ -8,6 +8,7 @@ import pickle
 from torch.nn import functional as F
 
 # hyperparameters
+subsample = 4
 batch_size = 64
 max_epochs = 100
 eval_interval = 5
@@ -21,7 +22,7 @@ n_enc_layer = 4
 n_dec_layer = 4
 dropout = 0.0
 max_line_len = 128
-max_strokes_len = 768
+max_strokes_len = 224
 wandb_log = False
 wandb_project = 'handwriting_synthesis'
 wandb_run_name = '_'.join(sys.argv[1:])
@@ -45,7 +46,7 @@ def plot_example(ax, text, strokes):
             ax.plot(xs, ys)
             xs, ys = [], []
 
-dataset = pickle.load(open('data/all.pkl', 'rb'))
+dataset = pickle.load(open(f'data/all_{subsample}.pkl', 'rb'))
 dataset = list(dataset.values())
 
 MU = torch.tensor([8.4637, 0.2108, 0])
@@ -67,7 +68,7 @@ def flatten(dataset):
             s = s.to(device)
             flat_dataset.append(dict(line=l, strokes=s))
     return flat_dataset
-    
+
 n = int(len(dataset) * 0.8)
 train_data = flatten(dataset[:n])
 val_data = flatten(dataset[n:])
