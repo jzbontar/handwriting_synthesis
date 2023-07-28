@@ -238,11 +238,12 @@ for epoch in range(max_epochs):
         if wandb_log:
             data = {f'{split}/{loss}':losses[split][loss] for split in ('train', 'val') for loss in ('loss', 'mse_loss', 'ce_loss')}
             
-            texts = ['Hello World', 'Katarina Zupancic', 'A MOVE to stop Mr . Gaitskell']
-            fig, axs = plt.subplots(len(texts))
-            for i, text in enumerate(texts):
-                sample = generate(text, max_strokes_len, temperature=0.0)
-                plot_example(axs[i], text, sample.cpu())
+            text = 'A MOVE to stop Mr . Gaitskell'
+            ts = [0.0, 0.1, 0.2, 0.5]
+            fig, axs = plt.subplots(len(ts))
+            for i, t in enumerate(ts):
+                sample = generate(text, max_strokes_len, temperature=t)
+                plot_example(axs[i], text, sample)
             fig.tight_layout()
             data['samples'] = wandb.Image(fig)
             plt.close()
