@@ -198,6 +198,8 @@ def generate(text, max_tokens, temperature=1.0):
         probs = F.softmax(d['cls'][0, -1], dim=0)
         cls = torch.multinomial(probs, num_samples=1)
         cls_x = torch.cat((cls_x, cls[None]), dim=1)
+        if cls.item() == 4:
+            break
     pos_x = pos_x.cpu()
     cls_x = cls_x.cpu()
     pos_x = pos_x[0, 1:]
@@ -238,7 +240,7 @@ for epoch in range(max_epochs):
             texts = ['Hello World', 'Katarina Zupancic', 'A MOVE to stop Mr . Gaitskell']
             fig, axs = plt.subplots(len(texts))
             for i, text in enumerate(texts):
-                sample = generate(text, max_strokes_len, temperature=0.2)
+                sample = generate(text, max_strokes_len, temperature=0.0)
                 plot_example(axs[i], text, sample.cpu())
             fig.tight_layout()
             data['samples'] = wandb.Image(fig)
