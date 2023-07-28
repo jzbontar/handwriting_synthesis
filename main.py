@@ -175,6 +175,7 @@ class Model(nn.Module):
             tgt_mask=attn_mask,
             src_key_padding_mask=src_pad_mask,
             tgt_key_padding_mask=tgt_pad_mask,
+            memory_key_padding_mask=src_pad_mask,
         )
         pos = self.pos_head(y)
         cls = self.cls_head(y)
