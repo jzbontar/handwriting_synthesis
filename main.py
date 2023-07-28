@@ -187,16 +187,16 @@ class Model(nn.Module):
         return dict(loss=loss, mse_loss=mse_loss, ce_loss=ce_loss)
     
 @torch.no_grad()
-def generate(text, max_tokens, temperature=1.0):
+def generate(text, max_tokens):
     line = encode(text)[None].to(device)
     pos_x = torch.zeros((1, 1, 2), device=device)
     cls_x = torch.ones((1, 1), dtype=torch.long, device=device)
     for _ in range(max_tokens):
         with ctx:
             d = model(dict(line=line, pos_x=pos_x, cls_x=cls_x))
-        pos = torch.normal(d['pos'][0, -1], temperature)
+        pos = d['pos'][0, -1]
         pos_x = torch.cat((pos_x, pos[None, None]), dim=1)
-        probs = F.softmax(d['cls'][0, -1] / (temperature + 1e-5), dim=0)
+        probs = F.softmax(d['cls'][0, -1], dim=0)
         cls = torch.multinomial(probs, num_samples=1)
         cls_x = torch.cat((cls_x, cls[None]), dim=1)
         if cls.item() == 4:
@@ -238,12 +238,11 @@ for epoch in range(max_epochs):
         if wandb_log:
             data = {f'{split}/{loss}':losses[split][loss] for split in ('train', 'val') for loss in ('loss', 'mse_loss', 'ce_loss')}
             
-            text = 'A MOVE to stop Mr . Gaitskell'
-            ts = [0.0, 0.1, 0.2, 0.5]
-            fig, axs = plt.subplots(len(ts))
-            for i, t in enumerate(ts):
-                sample = generate(text, max_strokes_len, temperature=t)
-                plot_example(axs[i], text, sample)
+            texts = ['A MOVE to stop Mr . Gaitskell', 'Hello world', 'Katarina Zupancic and Jure Zbontar']
+            fig, axs = plt.subplots(len(texts))
+            for i, t in enumerate(texts):
+                sample = generate(t, max_strokes_len)
+                plot_example(axs[i], t, sample)
             fig.tight_layout()
             data['samples'] = wandb.Image(fig)
             plt.close()
