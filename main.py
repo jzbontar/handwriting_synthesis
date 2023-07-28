@@ -49,8 +49,8 @@ def plot_example(ax, text, strokes):
 dataset = pickle.load(open(f'data/all_{subsample}.pkl', 'rb'))
 dataset = list(dataset.values())
 
-MU = torch.tensor([8.4637, 0.2108, 0])
-STD = torch.tensor([44.9969, 37.0469, 1])
+MU = torch.tensor([8.4637, 0.2108])
+STD = torch.tensor([44.9969, 37.0469])
 
 def encode(s):
     return torch.tensor(list(s.encode('ascii')), dtype=torch.long)
@@ -63,10 +63,23 @@ def flatten(dataset):
                 continue
             l = encode(l)
             l = l.to(device)
-            s = (s - MU) / STD
-            s = torch.cat((torch.zeros(1, 3), s))
-            s = s.to(device)
-            flat_dataset.append(dict(line=l, strokes=s))
+
+            # 0: pad
+            # 1: start
+            # 2: normal
+            # 3: end stroke
+            # 4: end example
+            cls = s[:, 2].long() + 2
+            cls[-1] += 1
+            cls = torch.cat((torch.tensor([1]), cls))
+            cls = cls.to(device)
+
+            pos = s[:, :2]
+            pos = (pos - MU) / STD
+            pos = torch.cat((torch.zeros(1, 2), pos))
+            pos = pos.to(device)
+
+            flat_dataset.append(dict(line=l, cls=cls, pos=pos))
     return flat_dataset
 
 n = int(len(dataset) * 0.8)
@@ -79,15 +92,20 @@ def get_batches(split):
     data = train_data if split == 'train' else val_data
     i = 0
     while i + batch_size < len(data):
-        enc_x, dec_x, dec_y = [], [], []
+        line, cls_x, pos_x, cls_y, pos_y = [], [], [], [], []
         for ex in data[i:i + batch_size]:
-            enc_x.append(ex['line'])
-            dec_x.append(ex['strokes'][:-1])
-            dec_y.append(ex['strokes'][1:])
-        enc_x = nn.utils.rnn.pad_sequence(enc_x, batch_first=True)
-        dec_x = nn.utils.rnn.pad_sequence(dec_x, batch_first=True, padding_value=-1)
-        dec_y = nn.utils.rnn.pad_sequence(dec_y, batch_first=True, padding_value=-1)
-        yield enc_x, dec_x, dec_y            
+            line.append(ex['line'])
+            cls_x.append(ex['cls'][:-1])
+            pos_x.append(ex['pos'][:-1])
+            cls_y.append(ex['cls'][1:])
+            pos_y.append(ex['pos'][1:])
+        yield dict(
+            line=nn.utils.rnn.pad_sequence(line, batch_first=True),
+            cls_x=nn.utils.rnn.pad_sequence(cls_x, batch_first=True),
+            pos_x=nn.utils.rnn.pad_sequence(pos_x, batch_first=True),
+            cls_y=nn.utils.rnn.pad_sequence(cls_y, batch_first=True),
+            pos_y=nn.utils.rnn.pad_sequence(pos_y, batch_first=True),
+        )
         i += batch_size
 
 @torch.no_grad()
@@ -95,17 +113,17 @@ def estimate_loss():
     out = {}
     model.eval()
     for split in ['train', 'val']:
-        loss, mse_loss, bce_loss = [], [], []
+        loss, mse_loss, ce_loss = [], [], []
         for batch in get_batches(split):
             with ctx:
-                d = model(*batch)
+                d = model(batch)
             loss.append(d['loss'].item())
             mse_loss.append(d['mse_loss'].item())
-            bce_loss.append(d['bce_loss'].item())
+            ce_loss.append(d['ce_loss'].item())
         out[split] = dict(
             loss=torch.tensor(loss).mean(),
             mse_loss=torch.tensor(mse_loss).mean(),
-            bce_loss=torch.tensor(bce_loss).mean(),
+            ce_loss=torch.tensor(ce_loss).mean(),
         )
     model.train()
     return out
@@ -115,9 +133,11 @@ class Model(nn.Module):
         super().__init__()
         self.enc_pos = nn.Embedding(max_line_len, n_embd)
         self.dec_pos = nn.Embedding(max_strokes_len, n_embd)
-        self.enc_emb = nn.Embedding(128, n_embd)
-        self.dec_emb = nn.Linear(3, n_embd)
-        self.dec_head = nn.Linear(n_embd, 3)
+        self.line_emb = nn.Embedding(128, n_embd)
+        self.cls_emb = nn.Embedding(5, n_embd)
+        self.cls_head = nn.Linear(n_embd, 5)
+        self.pos_emb = nn.Linear(2, n_embd)
+        self.pos_head = nn.Linear(n_embd, 2)
         self.transformer = nn.Transformer(
             d_model=n_embd,
             nhead=n_head,
@@ -128,47 +148,54 @@ class Model(nn.Module):
             batch_first=True,
         )
 
-    def forward(self, enc_x, dec_x, dec_y=None):
-        tgt_mask = nn.Transformer.generate_square_subsequent_mask(dec_x.size(1), device=device) == -torch.inf
-        src_key_padding_mask = enc_x == 0
-        tgt_key_padding_mask = torch.all(dec_x == -1, dim=2)
+    def forward(self, b):
+        attn_mask = nn.Transformer.generate_square_subsequent_mask(b['cls_x'].size(1), device=device) == -torch.inf
+        src_pad_mask = b['line'] == 0
+        tgt_pad_mask = b['cls_x'] == 0
 
-        enc_pos = self.enc_pos(torch.arange(enc_x.size(1), device=device))
-        dec_pos = self.dec_pos(torch.arange(dec_x.size(1), device=device))
-        enc_emb = self.enc_emb(enc_x)
-        dec_emb = self.dec_emb(dec_x)
-
+        enc_pos = self.enc_pos(torch.arange(b['line'].size(1), device=device))
+        dec_pos = self.dec_pos(torch.arange(b['cls_x'].size(1), device=device))
+        line_emb = self.line_emb(b['line'])
+        cls_emb = self.cls_emb(b['cls_x'])
+        pos_emb = self.pos_emb(b['pos_x'])
         y = self.transformer(
-            enc_emb + enc_pos, 
-            dec_emb + dec_pos, 
-            tgt_mask=tgt_mask,
-            src_key_padding_mask=src_key_padding_mask,
-            tgt_key_padding_mask=tgt_key_padding_mask,
+            enc_pos + line_emb, 
+            dec_pos + cls_emb + pos_emb, 
+            tgt_mask=attn_mask,
+            src_key_padding_mask=src_pad_mask,
+            tgt_key_padding_mask=tgt_pad_mask,
         )
-        y = self.dec_head(y)
-
-        if dec_y is None:
-            return dict(y=y)
-        y_valid = y[~tgt_key_padding_mask]
-        dec_y_valid = dec_y[~tgt_key_padding_mask]
-        mse_loss = F.mse_loss(y_valid[:, :2], dec_y_valid[:, :2])
-        bce_loss = F.binary_cross_entropy_with_logits(y_valid[:, 2], dec_y_valid[:, 2])
-        loss = mse_loss + bce_loss
-        return dict(y=y, loss=loss, mse_loss=mse_loss, bce_loss=bce_loss)
+        pos = self.pos_head(y)
+        cls = self.cls_head(y)
+        if 'pos_y' not in b:
+            return dict(pos=pos, cls=cls)
+        mse_loss = F.mse_loss(pos[~tgt_pad_mask], b['pos_y'][~tgt_pad_mask])
+        ce_loss = F.cross_entropy(cls[~tgt_pad_mask], b['cls_y'][~tgt_pad_mask])
+        loss = mse_loss + ce_loss
+        return dict(loss=loss, mse_loss=mse_loss, ce_loss=ce_loss)
     
 @torch.no_grad()
 def generate(text, max_tokens, temperature=1.0):
-    x = torch.zeros((1, 1, 3), device=device)
-    enc_x = encode(text)[None].to(device)
+    line = encode(text)[None].to(device)
+    pos_x = torch.zeros((1, 1, 2), device=device)
+    cls_x = torch.ones((1, 1), dtype=torch.long, device=device)
     for _ in range(max_tokens):
         with ctx:
-            pred = model(enc_x, x)['y'][0, -1]
-        dxdy = torch.normal(pred[:2], temperature)
-        stroke_end = torch.rand(1, device=device) < F.sigmoid(pred[2])
-        sample = torch.cat((dxdy, stroke_end))
-        x = torch.cat((x, sample[None, None]), dim=1)
-    x = x * STD.to(device) + MU.to(device)
-    return x[0, 1:]
+            d = model(dict(line=line, pos_x=pos_x, cls_x=cls_x))
+        pos = torch.normal(d['pos'][0, -1], temperature)
+        pos_x = torch.cat((pos_x, pos[None, None]), dim=1)
+        probs = F.softmax(d['cls'][0, -1], dim=0)
+        cls = torch.multinomial(probs, num_samples=1)
+        cls_x = torch.cat((cls_x, cls[None]), dim=1)
+    pos_x = pos_x.cpu()
+    cls_x = cls_x.cpu()
+    pos_x = pos_x[0, 1:]
+    cls_x = cls_x[0, 1:, None]
+    pos_x = pos_x * STD + MU
+    cls_x = cls_x == 3
+    cls_x[-1] = True
+    sample = torch.cat((pos_x, cls_x), dim=1)
+    return sample
     
 ctx = torch.autocast(device, getattr(torch, dtype))
 model = Model()
@@ -187,7 +214,7 @@ tt = time.time()
 for epoch in range(max_epochs):
     for batch in get_batches('train'):
         with ctx:
-            d = model(*batch)
+            d = model(batch)
         optimizer.zero_grad(set_to_none=True)
         d['loss'].backward()
         optimizer.step()
@@ -195,9 +222,9 @@ for epoch in range(max_epochs):
         losses = estimate_loss()
         print(f"epoch {epoch}: train loss {losses['train']['loss']:.4f}, val loss {losses['val']['loss']:.4f}, time {time.time() - tt:.1f}")
         if wandb_log:
-            data = {f'{split}/{loss}':losses[split][loss] for split in ('train', 'val') for loss in ('loss', 'mse_loss', 'bce_loss')}
+            data = {f'{split}/{loss}':losses[split][loss] for split in ('train', 'val') for loss in ('loss', 'mse_loss', 'ce_loss')}
             
-            texts = ['Hello World', 'Katarina Zupancic', 'Jure Zbontar']
+            texts = ['Hello World', 'Katarina Zupancic', 'A MOVE to stop Mr . Gaitskell']
             fig, axs = plt.subplots(len(texts))
             for i, text in enumerate(texts):
                 sample = generate(text, max_strokes_len, temperature=0.2)
