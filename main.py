@@ -14,6 +14,9 @@ batch_size = 64
 max_epochs = 1000
 eval_interval = 25
 learning_rate = 3e-4
+weight_decay = 1e-1
+beta1 = 0.9
+beta2 = 0.95
 device = 'cuda'
 dtype = 'bfloat16'
 compile = False
@@ -129,22 +132,23 @@ def estimate_loss():
     return out
 
 class PositionalEncoding(nn.Module):
-    def __init__(self, emb_size, maxlen):
+    def __init__(self, emb_size, maxlen, dropout):
         super().__init__()
         den = torch.exp(- torch.arange(0, emb_size, 2)* math.log(10000) / emb_size)
         pos = torch.arange(0, maxlen).reshape(maxlen, 1)
         pos_embedding = torch.zeros((maxlen, emb_size))
         pos_embedding[:, 0::2] = torch.sin(pos * den)
         pos_embedding[:, 1::2] = torch.cos(pos * den)
+        self.dropout = nn.Dropout(dropout)
         self.register_buffer('pos_embedding', pos_embedding)
 
     def forward(self, token_embedding: torch.Tensor):
-        return token_embedding + self.pos_embedding[:token_embedding.size(1)]
+        return self.dropout(token_embedding + self.pos_embedding[:token_embedding.size(1)])
 
 class Model(nn.Module):
     def __init__(self):
         super().__init__()
-        self.pos = PositionalEncoding(n_embd, max_strokes_len)
+        self.pos = PositionalEncoding(n_embd, max_strokes_len, dropout)
         self.line_emb = nn.Embedding(128, n_embd)
         self.cls_emb = nn.Embedding(5, n_embd)
         self.cls_head = nn.Linear(n_embd, 5)
@@ -209,7 +213,25 @@ if compile:
     model = torch.compile(model)
 torch.set_float32_matmul_precision('high')
 
-optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+
+# optimizer
+param_dict = {pn: p for pn, p in model.named_parameters()}
+# filter out those that do not require grad
+param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
+# create optim groups. Any parameters that is 2D will be weight decayed, otherwise no.
+# i.e. all weight tensors in matmuls + embeddings decay, all biases and layernorms don't.
+decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
+nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
+optim_groups = [
+    {'params': decay_params, 'weight_decay': weight_decay},
+    {'params': nodecay_params, 'weight_decay': 0.0}
+]
+num_decay_params = sum(p.numel() for p in decay_params)
+num_nodecay_params = sum(p.numel() for p in nodecay_params)
+print(f"num decayed parameter tensors: {len(decay_params)}, with {num_decay_params:,} parameters")
+print(f"num non-decayed parameter tensors: {len(nodecay_params)}, with {num_nodecay_params:,} parameters")
+optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=(beta1, beta2))
+
 if wandb_log:
     import wandb
     import pylab as plt
