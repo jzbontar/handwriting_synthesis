@@ -3,3 +3,4 @@ wandb/
 out/
 *.pt
 *.pyc
+*.png

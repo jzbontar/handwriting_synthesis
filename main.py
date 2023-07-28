@@ -76,7 +76,6 @@ val_data = flatten(dataset[n:])
 def get_batches(split):
     if split == 'train':
         random.shuffle(train_data)
-
     data = train_data if split == 'train' else val_data
     i = 0
     while i + batch_size < len(data):
@@ -96,12 +95,18 @@ def estimate_loss():
     out = {}
     model.eval()
     for split in ['train', 'val']:
-        losses = []
+        loss, mse_loss, bce_loss = [], [], []
         for batch in get_batches(split):
             with ctx:
-                _, loss = model(*batch)
-            losses.append(loss.item())
-        out[split] = torch.tensor(losses).mean()
+                d = model(*batch)
+            loss.append(d['loss'].item())
+            mse_loss.append(d['mse_loss'].item())
+            bce_loss.append(d['bce_loss'].item())
+        out[split] = dict(
+            loss=torch.tensor(loss).mean(),
+            mse_loss=torch.tensor(mse_loss).mean(),
+            bce_loss=torch.tensor(bce_loss).mean(),
+        )
     model.train()
     return out
 
@@ -143,13 +148,13 @@ class Model(nn.Module):
         y = self.dec_head(y)
 
         if dec_y is None:
-            return y
+            return dict(y=y)
         y_valid = y[~tgt_key_padding_mask]
         dec_y_valid = dec_y[~tgt_key_padding_mask]
         mse_loss = F.mse_loss(y_valid[:, :2], dec_y_valid[:, :2])
         bce_loss = F.binary_cross_entropy_with_logits(y_valid[:, 2], dec_y_valid[:, 2])
         loss = mse_loss + bce_loss
-        return y, loss
+        return dict(y=y, loss=loss, mse_loss=mse_loss, bce_loss=bce_loss)
     
 @torch.no_grad()
 def generate(text, max_tokens, temperature=1.0):
@@ -157,7 +162,7 @@ def generate(text, max_tokens, temperature=1.0):
     enc_x = encode(text)[None].to(device)
     for _ in range(max_tokens):
         with ctx:
-            pred = model(enc_x, x)[0, -1]
+            pred = model(enc_x, x)['y'][0, -1]
         dxdy = torch.normal(pred[:2], temperature)
         stroke_end = torch.rand(1, device=device) < F.sigmoid(pred[2])
         sample = torch.cat((dxdy, stroke_end))
@@ -177,28 +182,30 @@ if wandb_log:
     import wandb
     import pylab as plt
     wandb.init(project=wandb_project, name=wandb_run_name)
+
 tt = time.time()
 for epoch in range(max_epochs):
     for batch in get_batches('train'):
         with ctx:
-            _, loss = model(*batch)
+            d = model(*batch)
         optimizer.zero_grad(set_to_none=True)
-        loss.backward()
+        d['loss'].backward()
         optimizer.step()
     if epoch % eval_interval == 0 or epoch == max_epochs - 1:
         losses = estimate_loss()
-        print(f"epoch {epoch}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, time {time.time() - tt:.1f}")
+        print(f"epoch {epoch}: train loss {losses['train']['loss']:.4f}, val loss {losses['val']['loss']:.4f}, time {time.time() - tt:.1f}")
         if wandb_log:
+            data = {f'{split}/{loss}':losses[split][loss] for split in ('train', 'val') for loss in ('loss', 'mse_loss', 'bce_loss')}
+            
             texts = ['Hello World', 'Katarina Zupancic', 'Jure Zbontar']
             fig, axs = plt.subplots(len(texts))
             for i, text in enumerate(texts):
-                sample = generate(text, 512, temperature=0.2)
+                sample = generate(text, max_strokes_len, temperature=0.2)
                 plot_example(axs[i], text, sample.cpu())
             fig.tight_layout()
-            wandb.log(data=dict(
-                train=losses['train'],
-                val=losses['val'],
-                samples=wandb.Image(fig),
-            ), step=epoch)
+            data['samples'] = wandb.Image(fig)
             plt.close()
+
+            wandb.log(data=data, step=epoch)
+            
         tt = time.time()
