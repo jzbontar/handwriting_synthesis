@@ -19,7 +19,6 @@ dtype = 'bfloat16'
 compile = False
 n_embd = 32
 n_head = 4
-n_enc_layer = 4
 n_dec_layer = 4
 dropout = 0.0
 max_line_len = 128
@@ -151,15 +150,8 @@ class Model(nn.Module):
         self.cls_head = nn.Linear(n_embd, 5)
         self.pos_emb = nn.Linear(2, n_embd)
         self.pos_head = nn.Linear(n_embd, 2)
-        self.transformer = nn.Transformer(
-            d_model=n_embd,
-            nhead=n_head,
-            num_encoder_layers=n_enc_layer,
-            num_decoder_layers=n_dec_layer,
-            dim_feedforward=4 * n_embd,
-            dropout=dropout,
-            batch_first=True,
-        )
+        d = nn.TransformerDecoderLayer(d_model=n_embd, nhead=n_head, dim_feedforward=4 * n_embd, dropout=dropout, batch_first=True)
+        self.transformer = nn.TransformerDecoder(decoder_layer=d, num_layers=n_dec_layer)
 
     def forward(self, b):
         attn_mask = nn.Transformer.generate_square_subsequent_mask(b['cls_x'].size(1), device=device) == -torch.inf
@@ -170,12 +162,11 @@ class Model(nn.Module):
         cls_emb = self.cls_emb(b['cls_x'])
         pos_emb = self.pos_emb(b['pos_x'])
         y = self.transformer(
-            self.pos(line_emb), 
-            self.pos(cls_emb + pos_emb), 
+            tgt=self.pos(cls_emb + pos_emb),
+            memory=self.pos(line_emb),
             tgt_mask=attn_mask,
-            src_key_padding_mask=src_pad_mask,
             tgt_key_padding_mask=tgt_pad_mask,
-            memory_key_padding_mask=src_pad_mask,
+            memory_key_padding_mask=src_pad_mask
         )
         pos = self.pos_head(y)
         cls = self.cls_head(y)
